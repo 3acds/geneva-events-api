@@ -1,4 +1,11 @@
+__pycache__/
+*.py[cod]
 .vscode/
 node_modules/
+.env
+.venv/
+venv/
+.pytest_cache/
+.coverage
 # Firebase credentials
 api/config/database/cred.json

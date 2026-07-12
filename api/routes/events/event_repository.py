@@ -1,37 +1,33 @@
-from config.database.db import get_db
+from api.config.database.db import get_db
 from .event import Event
 
 
-##################################################
-################# DB ACCESS ######################
-##################################################
-
-# FETCH ALL EVENTS
 class EventRepository:
-  def fetch_all_events(self):
-    db = get_db()
-    documents = db.collection('Events').get()
-    events = [Event(**doc.to_dict()) for doc in documents]
-    return events
+    def __init__(self, db_factory=get_db):
+        self._db_factory = db_factory
 
-  # FETCH EVENTS BY {TAG}
-  def fetch_events_by_tag(self, event_tag):
-    db = get_db()
-    query = db.collection('Events').where('tag', '==', event_tag).get()
-    events = [Event(**doc.to_dict()) for doc in query if doc.exists]
-    return events
+    def _events(self, query):
+        return [Event.from_document(document) for document in query.stream()]
 
-  # FETCH EVENTS BY {DATE}
-  def fetch_events_by_date(self, day=None, month=None, year=None):
-    db = get_db()
-    query = db.collection('Events')
+    def fetch_all_events(self):
+        query = self._db_factory().collection("Events").order_by("date")
+        return self._events(query)
 
-    if day:
-        query = query.where('day', '==', day)
-    if month:
-        query = query.where('month', '==', month)
-    if year:
-        query = query.where('year', '==', year)
+    def fetch_events_by_tag(self, event_tag):
+        query = self._db_factory().collection("Events").where(
+            filter=self._field_filter("tag", "==", event_tag)
+        )
+        return self._events(query)
 
-    documents = query.get()
-    return [Event(**doc.to_dict()) for doc in documents]
+    def fetch_events_by_date(self, day=None, month=None, year=None):
+        query = self._db_factory().collection("Events")
+        for field, value in (("day", day), ("month", month), ("year", year)):
+            if value is not None:
+                query = query.where(filter=self._field_filter(field, "==", value))
+        return self._events(query.order_by("date"))
+
+    @staticmethod
+    def _field_filter(field, operator, value):
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        return FieldFilter(field, operator, value)

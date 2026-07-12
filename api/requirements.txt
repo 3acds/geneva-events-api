@@ -1,5 +1,6 @@
 flask
-flask-smorest
 flask-cors
 firebase-admin
 gunicorn
+python-dateutil
+selenium>=4.11

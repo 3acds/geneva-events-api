@@ -1,211 +1,206 @@
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import time
-import schedule
-from datetime import datetime
-from dateutil import parser
-import re
+"""Scrape the City of Geneva agenda and upsert events into Firestore."""
+
+import argparse
 import hashlib
-# Selenium
+import logging
+import os
+import re
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from dateutil import parser as date_parser
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-# Chromedriver
-from webdriver_manager.chrome import ChromeDriverManager
-# Firestore
+from selenium.webdriver.support.ui import WebDriverWait
+
 from api.config.database.db import get_db
-import warnings
-warnings.filterwarnings("ignore", message="Detected filter using positional arguments. Prefer using the 'filter' keyword argument instead.")
+
+LOGGER = logging.getLogger(__name__)
+AGENDA_URL = os.getenv("AGENDA_URL", "https://www.geneve.ch/agenda")
+ARTICLE_SELECTORS = ("article.event", "article[class*='event']", ".view-content article")
+MONTHS = {
+    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+    "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+    "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12,
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+    "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+}
 
 
-# Scraping logic
-def main_scrape():
-  try:
-    db = get_db()
-
-    # Chromedriver
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-
-    # Concerts page URL
-    driver.get("https://www.geneve.ch/en/agenda")
-
-    # Test URL
-    #driver.get("https://www.geneve.ch/en/agenda?f%5B0%5D=what%3AClubbing")
-
-    # Wait time necessary otherwise the description data doesn't appear
-    wait = WebDriverWait(driver, 10)
-
-    all_data = []
-
-    while True:
-        
-        # Fetch articles for the current page
-        articles = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "article.event")))
-        process_articles(articles, all_data)
-
-        # Move to next page
+def parse_event_date(value, now=None):
+    """Parse the first date from the site's French or English display text."""
+    if not value:
+        return None
+    now = now or datetime.now()
+    normalized = " ".join(value.replace("’", "'").split()).lower()
+    # In "du 12 au 18 août", the month applies to both ends of the range.
+    normalized = re.sub(
+        r"\b(?:du\s+)?(\d{1,2})\s+(?:au|to)\s+\d{1,2}\s+([a-zàâäéèêëîïôöùûüç]+)(\s+\d{4})?",
+        r"\1 \2\3",
+        normalized,
+    )
+    match = re.search(
+        r"(?:du|from)?\s*(\d{1,2})\s+([a-zàâäéèêëîïôöùûüç]+)(?:\s+(\d{4}))?",
+        normalized,
+    )
+    if match and match.group(2) in MONTHS:
+        day = int(match.group(1))
+        month = MONTHS[match.group(2)]
+        year = int(match.group(3) or now.year)
+        # Agenda pages can contain next year's events near year-end.
+        if not match.group(3) and month < now.month - 6:
+            year += 1
         try:
-            next_button = driver.find_element(By.CSS_SELECTOR, "a[rel='next']")
-            driver.get(next_button.get_attribute('href'))
-            time.sleep(2)
-        except NoSuchElementException as e:
-            print("No more pages to scrape.")
-            break 
-        
-    save_data(all_data, db)
-
-  except Exception as e:
-      print(f"An error occurred: {e}")
-  finally:
-      if 'service' in locals():
-        Service.stop()
-      driver.quit()
-
-# Proccessing logic
-def process_articles(articles, all_data):
-  for article in articles[:10]:
-    img = title = description = tag = ''
-    
-
-    #Img Scraper
-    try:
-      img_element = article.find_element(By.CSS_SELECTOR, "img.image")
-      img = img_element.get_attribute("src")
-    except NoSuchElementException as e:
-      print(f"Img: (element not found) {e}")
-
-    # Titles Scraper
-    try:
-      title_element = article.find_element(By.CSS_SELECTOR, "h3.titre")
-      title = title_element.text
-    except NoSuchElementException as e:
-      print(f"Title: (element not found) {e}")
-
-    # Dates Scraper
-    try:
-      date_element = article.find_element(By.CSS_SELECTOR, "div.date")
-      date = date_element.text
-      print(f"Raw Date String: {date}")
-    except NoSuchElementException as e:
-      print(f"Date: (element not found) {e}")
-      date = None
-
-    # Parsing date
-
-    def parse_event_date(date_str):
-      if 'From' in date_str and 'to' in date_str:
-        range_pattern = r"From (\d{1,2} \w+) to (\d{1,2} \w+)"
-        match = re.search(range_pattern, date_str)
-        if match:
-          start_date_str = match.group(1)
-          try:
-            current_year = datetime.now().year
-            start_date_str += f" {current_year}"
-            return parser.parse(start_date_str)
-          except ValueError:
-            return None
-      else:
-        date_str = re.sub(r"^\w+ ", "", date_str)
-        try:
-          return parser.parse(date_str)
+            return datetime(year, month, day)
         except ValueError:
-          return None
-
-    if date:
-      event_date = parse_event_date(date)
-      if event_date:
-        day = event_date.day
-        month = event_date.month
-        year = event_date.year
-        formatted_date_for_storage = event_date.isoformat()
-      else:
-        print(f"Could not parse date: {date}")
-        formatted_date_for_storage = day = month = year = None
-    else:
-      formatted_date_for_storage = day = month = year = None
-
-
-    # Descriptions Scraper
+            return None
     try:
-      description_elements = article.find_elements(By.CSS_SELECTOR, "p[class*='text-color-three']")
-      description = ' '.join([elem.text for elem in description_elements if elem.text])
-    except NoSuchElementException as e:
-      print(f"Description: (element not found) {e}")
+        parsed = date_parser.parse(value, fuzzy=True, dayfirst=True, default=now)
+        return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
+    except (ValueError, OverflowError):
+        return None
 
-    # Tags Scraper
-    try:
-        tag_element = article.find_element(By.CSS_SELECTOR, "p.tags")
-        tag = tag_element.text
-        normalized_tag = tag.replace(" ", "_")
-    except NoSuchElementException as e:
-        print(f"Tag: (element not found) {e}")
 
-    print("\n")
+def _first_text(element, selectors):
+    for selector in selectors:
+        candidates = element.find_elements(By.CSS_SELECTOR, selector)
+        if candidates and candidates[0].text.strip():
+            return candidates[0].text.strip()
+    return ""
 
-    # Fill the dictionary with the data only if the data contains a title and date
-    if title and date: 
-      event_data = {
-        'img': img,
-        'title': title,
-        'date': formatted_date_for_storage,
-        'day': day,
-        'month': month,
-        'year': year,
-        'description': description,
-        'tag': normalized_tag
-      }
-    
-      print(event_data)
-      all_data.append(event_data)  
 
-    else:
-      print("Some events have incomplete data therefor wont be added to the database")
+def _attribute(element, selectors, attribute):
+    for selector in selectors:
+        candidates = element.find_elements(By.CSS_SELECTOR, selector)
+        if candidates:
+            return candidates[0].get_attribute(attribute) or ""
+    return ""
 
-# Cheking to verify if the document already exists in the DB
-def event_exists(db, id):
-  events_ref = db.collection('Events')
-  query_ref = events_ref.where('id', '==', id)
-  docs = query_ref.stream()
-  return any(docs)
 
-# Generate hash event ID
+def parse_article(article):
+    title = _first_text(article, ("h2", "h3", "[class*='title']"))
+    raw_date = _first_text(article, ("time", "[class*='date']"))
+    event_date = parse_event_date(raw_date)
+    if not title or event_date is None:
+        LOGGER.warning("Skipping incomplete event: title=%r date=%r", title, raw_date)
+        return None
+
+    tags = article.find_elements(By.CSS_SELECTOR, ".tags a, [class*='tag'] a, [class*='category']")
+    tag = "_".join(tags[-1].text.strip().split()) if tags and tags[-1].text.strip() else ""
+    link = _attribute(article, ("h2 a", "h3 a", "a[href*='/agenda/']"), "href")
+    image = _attribute(article, ("img[src]", "img[data-src]"), "src")
+    description = _first_text(
+        article, ("[class*='description']", "[class*='summary']", ".field--type-text", "p")
+    )
+    iso_date = event_date.isoformat()
+    event_id = generate_event_id(title, iso_date)
+    return {
+        "id": event_id,
+        "img": image,
+        "title": title,
+        "date": event_date,
+        "day": event_date.day,
+        "month": event_date.month,
+        "year": event_date.year,
+        "description": description,
+        "tag": tag,
+        "source_url": link,
+    }
+
+
 def generate_event_id(title, date):
-  if date is None:
-    return None
-  else:
-    normalized_data = (title + date).replace(" ", "").lower()
-    hasher = hashlib.sha256()
-    hasher.update(normalized_data.encode('utf-8'))
-    event_id = hasher.hexdigest()
-    return event_id
+    normalized = f"{title.strip().casefold()}|{date}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
-# Saving logic    
-def save_data(all_data, db):
-  for event_data in all_data:
-    event_data['id'] = generate_event_id(event_data['title'], event_data['date'])
-    if not event_exists(db, event_data['id']):
-      if event_data['date'] is not None:
-        if not event_exists(db, event_data['id']):
-          # Convert event date to Firestore Timestamp object
-          event_date = datetime.strptime(event_data['date'], "%Y-%m-%dT%H:%M:%S")
-          event_data['date'] = event_date
-          db.collection('Events').add(event_data)
-        else:
-          print(f"Event with the ID of: {event_data['id']} already exists in the database")
-      else:
-        print("Skipping event with None date.")
 
-def run_scraper():
-  main_scrape()
-  # Updates once a minute for testing purposes
-  schedule.every().week.do(main_scrape)
+def create_driver(headless=True):
+    options = webdriver.ChromeOptions()
+    if headless:
+        options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1440,1200")
+    options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
+    # Selenium Manager resolves a compatible driver; no per-run driver download.
+    return webdriver.Chrome(options=options)
 
-if __name__ == '__main__':
-  run_scraper()
-  while True:
-      schedule.run_pending()
-      time.sleep(1)
+
+def scrape_events(driver, url=AGENDA_URL, max_pages=None):
+    events = {}
+    page = 0
+    driver.get(url)
+    wait = WebDriverWait(driver, 20)
+    while max_pages is None or page < max_pages:
+        page += 1
+        articles = []
+        for selector in ARTICLE_SELECTORS:
+            try:
+                articles = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
+                if articles:
+                    break
+            except TimeoutException:
+                continue
+        if not articles:
+            raise RuntimeError(f"No event cards found on {driver.current_url}; site markup may have changed")
+        for article in articles:
+            event = parse_article(article)
+            if event:
+                events[event["id"]] = event
+        LOGGER.info("Scraped page %d (%d unique events)", page, len(events))
+        try:
+            next_link = driver.find_element(By.CSS_SELECTOR, "a[rel='next'], .pager__item--next a")
+            next_url = next_link.get_attribute("href")
+        except NoSuchElementException:
+            break
+        if not next_url or next_url == driver.current_url:
+            break
+        driver.get(next_url)
+    return list(events.values())
+
+
+def save_data(events, db):
+    """Upsert in Firestore batches, avoiding one read query per event."""
+    saved = 0
+    for offset in range(0, len(events), 500):
+        batch = db.batch()
+        chunk = events[offset:offset + 500]
+        for event in chunk:
+            reference = db.collection("Events").document(event["id"])
+            batch.set(reference, event, merge=True)
+        batch.commit()
+        saved += len(chunk)
+    return saved
+
+
+def main_scrape(max_pages=None, headless=True):
+    driver = create_driver(headless=headless)
+    try:
+        events = scrape_events(driver, max_pages=max_pages)
+    finally:
+        driver.quit()
+    saved = save_data(events, get_db())
+    LOGGER.info("Upserted %d events", saved)
+    return saved
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-pages", type=int, help="limit pages (useful for smoke tests)")
+    parser.add_argument("--show-browser", action="store_true")
+    args = parser.parse_args()
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
+    main_scrape(max_pages=args.max_pages, headless=not args.show_browser)
+
+
+if __name__ == "__main__":
+    main()

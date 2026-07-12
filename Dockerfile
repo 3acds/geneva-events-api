@@ -8,4 +8,4 @@ RUN pip install --no-cache-dir -r api/requirements.txt
 
 EXPOSE 10000
 
-CMD ["sh", "-c", "gunicorn --chdir api --bind 0.0.0.0:${PORT:-10000} app:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-10000} api.app:app"]

@@ -1,61 +1,62 @@
-# GEEvents Python Course Project
+# Geneva Events API
 
-Introduction:
+Flask API backed by Firestore, plus a Selenium scraper for the City of Geneva
+agenda.
 
-This application aims to provide users with information about events in Geneva in a simple and intuitive way. Such information is scattered across the web, requiring searches or prior knowledge of the event.
+## Setup
 
-Developer:
+Requires Python 3.12+ and Chrome/Chromium when running the scraper.
 
-About this project:
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r api/requirements.txt
+```
 
-This project uses an MVC architecture and utilizes the following technologies:
+Configure Firebase in one of these ways:
 
-Primary:
-Python, Flask, Selenium, Firebase
+- set `FIREBASE_CREDENTIALS_JSON` to the complete service-account JSON;
+- use Google Application Default Credentials; or
+- set `FIRESTORE_EMULATOR_HOST` for local development.
 
-Secondary:
-HTML/CSS, Bootstrap, JavaScript
+## Run
 
-Dependencies:
+```bash
+# Development API (http://localhost:8080)
+python3 -m api.app
 
-Axios: $ npm install axios
-Flask-cors: $ pip install -u flask-cors
-Firebase-admin: $ pip install –user firebase-admin
-The idea of the project is to scrape the web for information about events in Geneva and store them in a NoSQL database (Firebase). Once the data is stored, an API is used to manage communication between the front and back ends. Finally, a simple front end allows users to query the database for event data.
+# Production API
+gunicorn --bind 0.0.0.0:${PORT:-10000} api.app:app
 
-Project Environment:
+# Scrape all agenda pages once
+python3 -m scraper.scrape_articles
 
-[Docker?]
+# Quick scraper smoke run
+python3 -m scraper.scrape_articles --max-pages 1
+```
 
-API Documentation:
+Schedule the one-shot scraper with cron, a cloud scheduler, or a CI workflow.
+Running scheduling inside the API process can duplicate jobs when Gunicorn uses
+multiple workers.
 
-API ENDPOINTS:
+## API
 
-GET all events
-URL: /events
-Method: GET
-Parameters: None
-Response: List of all events.
-Example response: http://127.0.0.1:5000/events
-GET events by tag
-URL: /events/tag/
-Method: GET
-Parameters:
-tag (required): The tag of events to filter.
-Response: List of events filtered by tag.
-Example response: http://127.0.0.1:5000/events/tag/Dance
-GET events by date
-URL: /events/date?day=&month=&year=
-Method: GET
-Parameters:
-day, month, year (required): The date to filter.
-Response: List of events filtered by day, month, or year.
-Example response: http://127.0.0.1:5000/events/date?day=18&month=04&year=2024
-Error Handling:
+- `GET /health` — liveness check (does not contact Firestore)
+- `GET /events/` — all events ordered by date
+- `GET /events/tag/<tag>` — events with an exact normalized tag
+- `GET /events/date?day=14&month=3&year=2026` — filter by one or more date parts
 
-Common error codes:
+Successful event responses are JSON arrays. Empty result sets return `404`; bad
+date-filter input returns `400`; database configuration failures return `503`.
 
-404 (Not found)
-Frontend:
+## Docker
 
-Since the focus of the Python project is mainly on the backend, I've created a frontend using vanilla JavaScript along with HTML and basic CSS/Bootstrap for this initial phase of the project. This allows us to test our API without the need for additional tools.
+```bash
+docker build -t geneva-events-api .
+docker run --rm -p 10000:10000 \
+  -e FIREBASE_CREDENTIALS_JSON="$FIREBASE_CREDENTIALS_JSON" \
+  geneva-events-api
+```
+
+The API image does not install Chrome. Run the scraper in an environment that
+provides Chrome/Chromium, or extend the image with a browser package.

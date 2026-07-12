@@ -2,12 +2,8 @@ from flask import Blueprint, jsonify
 from .event_service import EventService
 from flask import request
 
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
-
-from utils.decorators import error_handler
-from execptions.NotFoundException import NotFoundException
+from api.utils.decorators import error_handler
+from api.execptions.NotFoundException import NotFoundException
 
 event_blueprint = Blueprint('events', __name__)
 event_service = EventService()
@@ -22,7 +18,7 @@ event_service = EventService()
 def get_events():
   events = event_service.get_all_events()
   if events:
-    return jsonify([event.__dict__ for event in events])
+    return jsonify([event.to_dict() for event in events])
   else:
     raise NotFoundException("No events found.")
   
@@ -32,7 +28,7 @@ def get_events():
 def get_tag(event_tag):
   events = event_service.get_events_by_tag(event_tag)
   if events:
-    return jsonify([event.__dict__ for event in events]), 200 
+    return jsonify([event.to_dict() for event in events]), 200
   else:
     raise NotFoundException("Event not found")
   
@@ -44,10 +40,15 @@ def get_date():
     month = request.args.get('month', default=None, type=int)
     year = request.args.get('year', default=None, type=int)
     
-    print(f"Day: ({type(day)} : {day}), Month: {month}, Year: {year}")
+    if not any(value is not None for value in (day, month, year)):
+      return jsonify({'error': 'Provide at least one of day, month, or year.'}), 400
+    if day is not None and not 1 <= day <= 31:
+      return jsonify({'error': 'day must be between 1 and 31.'}), 400
+    if month is not None and not 1 <= month <= 12:
+      return jsonify({'error': 'month must be between 1 and 12.'}), 400
 
     events = event_service.get_events_by_date(day=day, month=month, year=year)
     if events:
-      return jsonify([event.__dict__ for event in events]), 200 
+      return jsonify([event.to_dict() for event in events]), 200
     else:
       raise NotFoundException("Event not found")
