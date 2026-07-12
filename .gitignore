@@ -1,2 +1,4 @@
 .vscode/
 node_modules/
+# Firebase credentials
+api/config/database/cred.json
