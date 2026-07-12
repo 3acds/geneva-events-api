@@ -19,6 +19,10 @@ Configure Firebase in one of these ways:
 - use Google Application Default Credentials; or
 - set `FIRESTORE_EMULATOR_HOST` for local development.
 
+Set `CORS_ORIGINS` to a comma-separated list when the frontend is hosted on
+additional domains. The defaults are `https://gee.bsilva.ch` and the local
+Vite development server.
+
 ## Run
 
 ```bash
@@ -43,11 +47,13 @@ multiple workers.
 
 - `GET /health` — liveness check (does not contact Firestore)
 - `GET /events/` — all events ordered by date
+- `GET /events/<id>` — one event, used when a detail page is opened directly
 - `GET /events/tag/<tag>` — events with an exact normalized tag
 - `GET /events/date?day=14&month=3&year=2026` — filter by one or more date parts
 
-Successful event responses are JSON arrays. Empty result sets return `404`; bad
-date-filter input returns `400`; database configuration failures return `503`.
+Successful collection responses are JSON arrays, including an empty array when
+there are no matches. Missing event IDs return `404`; bad date-filter input
+returns `400`; database configuration failures return `503`.
 
 ## Docker
 

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: geneva-events-api
+    runtime: python
+    buildCommand: pip install -r api/requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT api.app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.2
+      - key: FIREBASE_CREDENTIALS_JSON
+        sync: false
+      - key: CORS_ORIGINS
+        value: https://gee.bsilva.ch,https://geneva-events-web.onrender.com,http://localhost:5173

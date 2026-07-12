@@ -13,6 +13,10 @@ class EventRepository:
         query = self._db_factory().collection("Events").order_by("date")
         return self._events(query)
 
+    def fetch_event_by_id(self, event_id):
+        document = self._db_factory().collection("Events").document(event_id).get()
+        return Event.from_document(document) if document.exists else None
+
     def fetch_events_by_tag(self, event_tag):
         query = self._db_factory().collection("Events").where(
             filter=self._field_filter("tag", "==", event_tag)

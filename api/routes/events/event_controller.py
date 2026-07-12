@@ -17,20 +17,22 @@ event_service = EventService()
 @error_handler
 def get_events():
   events = event_service.get_all_events()
-  if events:
-    return jsonify([event.to_dict() for event in events])
-  else:
-    raise NotFoundException("No events found.")
+  return jsonify([event.to_dict() for event in events])
+
+@event_blueprint.route('/<event_id>', methods=['GET'])
+@error_handler
+def get_event(event_id):
+  event = event_service.get_event_by_id(event_id)
+  if event:
+    return jsonify(event.to_dict())
+  raise NotFoundException("Event not found")
   
 # GET EVENTS BY {TAG}
 @event_blueprint.route('/tag/<event_tag>', methods=['GET'])
 @error_handler
 def get_tag(event_tag):
   events = event_service.get_events_by_tag(event_tag)
-  if events:
-    return jsonify([event.to_dict() for event in events]), 200
-  else:
-    raise NotFoundException("Event not found")
+  return jsonify([event.to_dict() for event in events]), 200
   
 # GET EVENTS BY {Date}
 @event_blueprint.route('/date', methods=['GET'])
@@ -48,7 +50,4 @@ def get_date():
       return jsonify({'error': 'month must be between 1 and 12.'}), 400
 
     events = event_service.get_events_by_date(day=day, month=month, year=year)
-    if events:
-      return jsonify([event.to_dict() for event in events]), 200
-    else:
-      raise NotFoundException("Event not found")
+    return jsonify([event.to_dict() for event in events]), 200

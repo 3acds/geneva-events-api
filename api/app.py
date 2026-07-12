@@ -9,6 +9,7 @@ from api.routes.events.event_controller import event_blueprint
 # from routes.login.login_controller import login_blueprint
 
 app = Flask(__name__)
+app.url_map.strict_slashes = False
 
 @app.get('/health')
 def health():
@@ -17,14 +18,18 @@ def health():
 # app.config['JWT_SECRET_KEY'] = 'your-secret-key'
 # jwt = JWTManager(app)
 
-cors = CORS(
+default_origins = "https://gee.bsilva.ch,https://geneva-events-web.onrender.com,http://localhost:5173"
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", default_origins).split(",")
+    if origin.strip()
+]
+
+CORS(
     app,
     resources={
         r"/*": {
-            "origins": [
-                "https://gee.bsilva.ch",
-                "http://localhost:5173",
-            ]
+            "origins": allowed_origins,
         }
     },
 )
