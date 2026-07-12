@@ -1,4 +1,5 @@
 flask
 flask-smorest
 flask-cors
-firebase_admin
+firebase-admin
+gunicorn

@@ -1,21 +1,11 @@
-# Use an official Python runtime as a parent image
 FROM python:3.12.2-slim
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
 COPY . .
 
-# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r api/requirements.txt
 
-# Make port 5000 available to the world outside this container
-EXPOSE 5000
+EXPOSE 10000
 
-# Define environment variable
-ENV FLASK_APP=api/app.py
-
-# Run app.py when the container launches
-CMD ["flask", "run", "--host=0.0.0.0"]
-
+CMD ["sh", "-c", "gunicorn --chdir api --bind 0.0.0.0:${PORT:-10000} app:app"]
