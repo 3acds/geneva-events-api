@@ -9,6 +9,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -86,7 +87,29 @@ def _attribute(element, selectors, attribute):
     return ""
 
 
-def parse_article(article):
+def _image_url(article, base_url):
+    """Return the real URL from normal and lazy-loaded image markup."""
+    candidates = article.find_elements(By.CSS_SELECTOR, "img")
+    for image in candidates:
+        for attribute in ("data-src", "data-lazy-src", "data-original"):
+            value = (image.get_attribute(attribute) or "").strip()
+            if value and not value.startswith(("data:", "blob:")):
+                return urljoin(base_url, value)
+
+        srcset = (image.get_attribute("data-srcset") or image.get_attribute("srcset") or "").strip()
+        if srcset:
+            # The final srcset candidate is normally the highest-resolution image.
+            value = srcset.split(",")[-1].strip().split()[0]
+            if value and not value.startswith(("data:", "blob:")):
+                return urljoin(base_url, value)
+
+        value = (image.get_attribute("src") or "").strip()
+        if value and not value.startswith(("data:", "blob:")):
+            return urljoin(base_url, value)
+    return ""
+
+
+def parse_article(article, base_url=AGENDA_URL):
     title = _first_text(article, ("h2", "h3", "[class*='title']"))
     raw_date = _first_text(article, ("time", "[class*='date']"))
     event_date = parse_event_date(raw_date)
@@ -96,8 +119,9 @@ def parse_article(article):
 
     tags = article.find_elements(By.CSS_SELECTOR, ".tags a, [class*='tag'] a, [class*='category']")
     tag = "_".join(tags[-1].text.strip().split()) if tags and tags[-1].text.strip() else ""
-    link = _attribute(article, ("h2 a", "h3 a", "a[href*='/agenda/']"), "href")
-    image = _attribute(article, ("img[src]", "img[data-src]"), "src")
+    raw_link = _attribute(article, ("h2 a", "h3 a", "a[href*='/agenda/']"), "href")
+    link = urljoin(base_url, raw_link) if raw_link else ""
+    image = _image_url(article, base_url)
     description = _first_text(
         article, ("[class*='description']", "[class*='summary']", ".field--type-text", "p")
     )
@@ -130,7 +154,6 @@ def create_driver(headless=True):
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1440,1200")
-    options.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
     # Selenium Manager resolves a compatible driver; no per-run driver download.
     return webdriver.Chrome(options=options)
 
@@ -153,7 +176,9 @@ def scrape_events(driver, url=AGENDA_URL, max_pages=None):
         if not articles:
             raise RuntimeError(f"No event cards found on {driver.current_url}; site markup may have changed")
         for article in articles:
-            event = parse_article(article)
+            # Scrolling activates the agenda's native lazy-loading attributes.
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", article)
+            event = parse_article(article, base_url=driver.current_url)
             if event:
                 events[event["id"]] = event
         LOGGER.info("Scraped page %d (%d unique events)", page, len(events))
@@ -168,8 +193,19 @@ def scrape_events(driver, url=AGENDA_URL, max_pages=None):
     return list(events.values())
 
 
-def save_data(events, db):
-    """Upsert in Firestore batches, avoiding one read query per event."""
+def save_data(events, db, prune=False):
+    """Upsert a complete scrape and optionally remove records no longer listed."""
+    if not events:
+        raise RuntimeError("Refusing to sync an empty scrape")
+
+    existing_documents = list(db.collection("Events").stream()) if prune else []
+    minimum_ratio = float(os.getenv("PRUNE_MIN_RATIO", "0.5"))
+    if existing_documents and len(events) < len(existing_documents) * minimum_ratio:
+        raise RuntimeError(
+            "Refusing to prune: scrape returned "
+            f"{len(events)} events for {len(existing_documents)} existing records"
+        )
+
     saved = 0
     for offset in range(0, len(events), 500):
         batch = db.batch()
@@ -179,17 +215,37 @@ def save_data(events, db):
             batch.set(reference, event, merge=True)
         batch.commit()
         saved += len(chunk)
-    return saved
+
+    deleted = 0
+    if prune:
+        scraped_ids = {event["id"] for event in events}
+        stale_references = [
+            document.reference
+            for document in existing_documents
+            if document.id not in scraped_ids
+        ]
+        for offset in range(0, len(stale_references), 500):
+            batch = db.batch()
+            chunk = stale_references[offset:offset + 500]
+            for reference in chunk:
+                batch.delete(reference)
+            batch.commit()
+            deleted += len(chunk)
+
+    return saved, deleted
 
 
-def main_scrape(max_pages=None, headless=True):
+def main_scrape(max_pages=None, headless=True, prune=False):
+    if prune and max_pages is not None:
+        raise ValueError("--prune cannot be combined with --max-pages")
+
     driver = create_driver(headless=headless)
     try:
         events = scrape_events(driver, max_pages=max_pages)
     finally:
         driver.quit()
-    saved = save_data(events, get_db())
-    LOGGER.info("Upserted %d events", saved)
+    saved, deleted = save_data(events, get_db(), prune=prune)
+    LOGGER.info("Synchronized %d events and removed %d stale events", saved, deleted)
     return saved
 
 
@@ -197,9 +253,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, help="limit pages (useful for smoke tests)")
     parser.add_argument("--show-browser", action="store_true")
+    parser.add_argument(
+        "--prune",
+        action="store_true",
+        help="remove Firestore events absent from a successful complete scrape",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
-    main_scrape(max_pages=args.max_pages, headless=not args.show_browser)
+    main_scrape(max_pages=args.max_pages, headless=not args.show_browser, prune=args.prune)
 
 
 if __name__ == "__main__":

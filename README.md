@@ -43,6 +43,25 @@ Schedule the one-shot scraper with cron, a cloud scheduler, or a CI workflow.
 Running scheduling inside the API process can duplicate jobs when Gunicorn uses
 multiple workers.
 
+This repository includes a GitHub Actions workflow that performs a complete
+scrape every 30 minutes, upserts the current events, and removes records that
+are no longer on the agenda. Add the Firebase service-account JSON as the
+repository secret `FIREBASE_CREDENTIALS_JSON`, then run **Sync Geneva events**
+manually once to verify it. Scheduled GitHub Actions jobs can start a few
+minutes late, so this is near-real-time synchronization rather than an
+instantaneous feed.
+
+To perform the same safe synchronization locally:
+
+```bash
+python3 -m scraper.scrape_articles --prune
+```
+
+Pruning is rejected when `--max-pages` is used, and an empty scrape is never
+written. By default, pruning is also rejected if the scrape returns fewer than
+50% of the existing record count. Override that threshold with
+`PRUNE_MIN_RATIO` only when a large legitimate drop is expected.
+
 ## API
 
 - `GET /health` — liveness check (does not contact Firestore)
