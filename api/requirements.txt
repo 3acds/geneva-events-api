@@ -3,4 +3,5 @@ flask-cors
 firebase-admin
 gunicorn
 python-dateutil
-selenium>=4.11
+beautifulsoup4>=4.12
+requests>=2.31

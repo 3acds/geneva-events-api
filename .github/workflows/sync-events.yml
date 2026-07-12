@@ -1,6 +1,12 @@
 name: Sync Geneva events
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/sync-events.yml"
+      - "api/requirements.txt"
+      - "scraper/**"
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
@@ -12,7 +18,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,8 +28,10 @@ jobs:
           cache-dependency-path: api/requirements.txt
       - name: Install dependencies
         run: pip install -r api/requirements.txt
-      - name: Verify Chrome
-        run: google-chrome --version
+      - name: Verify Firebase configuration
+        env:
+          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
+        run: test -n "$FIREBASE_CREDENTIALS_JSON" || (echo "::error::Add FIREBASE_CREDENTIALS_JSON as a repository secret" && exit 1)
       - name: Scrape and synchronize Firestore
         env:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}

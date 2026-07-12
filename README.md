@@ -5,7 +5,8 @@ agenda.
 
 ## Setup
 
-Requires Python 3.12+ and Chrome/Chromium when running the scraper.
+Requires Python 3.12+. The agenda is server-rendered, so the scraper does not
+need Chrome, a browser driver, or JavaScript execution.
 
 ```bash
 python3 -m venv .venv
@@ -51,6 +52,9 @@ manually once to verify it. Scheduled GitHub Actions jobs can start a few
 minutes late, so this is near-real-time synchronization rather than an
 instantaneous feed.
 
+Changes to the scraper also trigger an immediate synchronization when pushed
+to `main`, so fixes do not have to wait for the next scheduled interval.
+
 To perform the same safe synchronization locally:
 
 ```bash
@@ -83,5 +87,5 @@ docker run --rm -p 10000:10000 \
   geneva-events-api
 ```
 
-The API image does not install Chrome. Run the scraper in an environment that
-provides Chrome/Chromium, or extend the image with a browser package.
+The scraper uses ordinary HTTP requests and can run in the same Python
+environment without browser packages.

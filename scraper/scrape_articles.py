@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import sys
-import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
@@ -15,18 +15,36 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
-from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+import requests
 
 from api.config.database.db import get_db
 
 LOGGER = logging.getLogger(__name__)
 AGENDA_URL = os.getenv("AGENDA_URL", "https://www.geneve.ch/agenda")
 ARTICLE_SELECTORS = ("article.event", "article[class*='event']", ".view-content article")
+REQUEST_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml",
+    "Accept-Language": "fr-CH,fr;q=0.9",
+    "User-Agent": "Mozilla/5.0 (compatible; GenevaEventsBot/1.0)",
+}
+TAG_MAP = {
+    "atelier": "Workshop",
+    "balade - excursion": "Guided_visit",
+    "cinema": "Screening",
+    "conference - rencontre": "Conference_-_Meeting",
+    "concert": "Concert",
+    "danse": "Dance",
+    "exposition": "Exhibition",
+    "lecture": "Reading",
+    "projection": "Screening",
+    "spectacle - theatre": "Theatre",
+    "sport": "Sport",
+    "theatre": "Theatre",
+    "visite commentee": "Guided_visit",
+    "visite guidee": "Guided_visit",
+}
 MONTHS = {
     "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
     "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
@@ -45,7 +63,7 @@ def parse_event_date(value, now=None):
     normalized = " ".join(value.replace("’", "'").split()).lower()
     # In "du 12 au 18 août", the month applies to both ends of the range.
     normalized = re.sub(
-        r"\b(?:du\s+)?(\d{1,2})\s+(?:au|to)\s+\d{1,2}\s+([a-zàâäéèêëîïôöùûüç]+)(\s+\d{4})?",
+        r"\b(?:du\s+)?(\d{1,2})\s+(?:au|et|to|and)\s+\d{1,2}\s+([a-zàâäéèêëîïôöùûüç]+)(\s+\d{4})?",
         r"\1 \2\3",
         normalized,
     )
@@ -73,40 +91,51 @@ def parse_event_date(value, now=None):
 
 def _first_text(element, selectors):
     for selector in selectors:
-        candidates = element.find_elements(By.CSS_SELECTOR, selector)
-        if candidates and candidates[0].text.strip():
-            return candidates[0].text.strip()
+        candidate = element.select_one(selector)
+        if candidate and candidate.get_text(" ", strip=True):
+            return candidate.get_text(" ", strip=True)
     return ""
 
 
 def _attribute(element, selectors, attribute):
     for selector in selectors:
-        candidates = element.find_elements(By.CSS_SELECTOR, selector)
-        if candidates:
-            return candidates[0].get_attribute(attribute) or ""
+        candidate = element.select_one(selector)
+        if candidate:
+            return candidate.get(attribute, "")
     return ""
 
 
 def _image_url(article, base_url):
     """Return the real URL from normal and lazy-loaded image markup."""
-    candidates = article.find_elements(By.CSS_SELECTOR, "img")
+    candidates = article.select("img")
     for image in candidates:
         for attribute in ("data-src", "data-lazy-src", "data-original"):
-            value = (image.get_attribute(attribute) or "").strip()
+            value = (image.get(attribute) or "").strip()
             if value and not value.startswith(("data:", "blob:")):
                 return urljoin(base_url, value)
 
-        srcset = (image.get_attribute("data-srcset") or image.get_attribute("srcset") or "").strip()
+        srcset = (image.get("data-srcset") or image.get("srcset") or "").strip()
         if srcset:
             # The final srcset candidate is normally the highest-resolution image.
             value = srcset.split(",")[-1].strip().split()[0]
             if value and not value.startswith(("data:", "blob:")):
                 return urljoin(base_url, value)
 
-        value = (image.get_attribute("src") or "").strip()
+        value = (image.get("src") or "").strip()
         if value and not value.startswith(("data:", "blob:")):
             return urljoin(base_url, value)
     return ""
+
+
+def normalize_tag(value):
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(character)
+    )
+    normalized = re.sub(r"\s*[–—]\s*", " - ", normalized)
+    normalized = " ".join(normalized.split())
+    return TAG_MAP.get(normalized, "_".join(value.split()))
 
 
 def parse_article(article, base_url=AGENDA_URL):
@@ -117,9 +146,9 @@ def parse_article(article, base_url=AGENDA_URL):
         LOGGER.warning("Skipping incomplete event: title=%r date=%r", title, raw_date)
         return None
 
-    tags = article.find_elements(By.CSS_SELECTOR, ".tags a, [class*='tag'] a, [class*='category']")
-    tag = "_".join(tags[-1].text.strip().split()) if tags and tags[-1].text.strip() else ""
-    raw_link = _attribute(article, ("h2 a", "h3 a", "a[href*='/agenda/']"), "href")
+    tags = [tag.get_text(" ", strip=True) for tag in article.select(".tags")]
+    tag = normalize_tag(tags[-1]) if tags and tags[-1] else ""
+    raw_link = _attribute(article, ("a[href*='/agenda/']", "h2 a", "h3 a"), "href")
     link = urljoin(base_url, raw_link) if raw_link else ""
     image = _image_url(article, base_url)
     description = _first_text(
@@ -146,50 +175,42 @@ def generate_event_id(title, date):
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def create_driver(headless=True):
-    options = webdriver.ChromeOptions()
-    if headless:
-        options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1440,1200")
-    # Selenium Manager resolves a compatible driver; no per-run driver download.
-    return webdriver.Chrome(options=options)
-
-
-def scrape_events(driver, url=AGENDA_URL, max_pages=None):
+def scrape_events(url=AGENDA_URL, max_pages=None, session=None):
+    """Scrape the server-rendered agenda without a browser or JavaScript runtime."""
     events = {}
     page = 0
-    driver.get(url)
-    wait = WebDriverWait(driver, 20)
+    next_url = url
+    session = session or requests.Session()
+    session.headers.update(REQUEST_HEADERS)
+
     while max_pages is None or page < max_pages:
         page += 1
-        articles = []
+        response = session.get(next_url, timeout=(10, 30))
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        articles = None
         for selector in ARTICLE_SELECTORS:
-            try:
-                articles = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector)))
-                if articles:
-                    break
-            except TimeoutException:
-                continue
+            articles = soup.select(selector)
+            if articles:
+                break
         if not articles:
-            raise RuntimeError(f"No event cards found on {driver.current_url}; site markup may have changed")
+            raise RuntimeError(f"No event cards found on {next_url}; site markup may have changed")
+
         for article in articles:
-            # Scrolling activates the agenda's native lazy-loading attributes.
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", article)
-            event = parse_article(article, base_url=driver.current_url)
+            event = parse_article(article, base_url=next_url)
             if event:
                 events[event["id"]] = event
         LOGGER.info("Scraped page %d (%d unique events)", page, len(events))
-        try:
-            next_link = driver.find_element(By.CSS_SELECTOR, "a[rel='next'], .pager__item--next a")
-            next_url = next_link.get_attribute("href")
-        except NoSuchElementException:
+
+        next_link = soup.select_one("a[rel='next'], .pager__item--next a")
+        if not next_link or not next_link.get("href"):
             break
-        if not next_url or next_url == driver.current_url:
+        candidate_url = urljoin(next_url, next_link["href"])
+        if candidate_url == next_url:
             break
-        driver.get(next_url)
+        next_url = candidate_url
+
     return list(events.values())
 
 
@@ -235,15 +256,11 @@ def save_data(events, db, prune=False):
     return saved, deleted
 
 
-def main_scrape(max_pages=None, headless=True, prune=False):
+def main_scrape(max_pages=None, prune=False):
     if prune and max_pages is not None:
         raise ValueError("--prune cannot be combined with --max-pages")
 
-    driver = create_driver(headless=headless)
-    try:
-        events = scrape_events(driver, max_pages=max_pages)
-    finally:
-        driver.quit()
+    events = scrape_events(max_pages=max_pages)
     saved, deleted = save_data(events, get_db(), prune=prune)
     LOGGER.info("Synchronized %d events and removed %d stale events", saved, deleted)
     return saved
@@ -252,7 +269,6 @@ def main_scrape(max_pages=None, headless=True, prune=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-pages", type=int, help="limit pages (useful for smoke tests)")
-    parser.add_argument("--show-browser", action="store_true")
     parser.add_argument(
         "--prune",
         action="store_true",
@@ -260,7 +276,7 @@ def main():
     )
     args = parser.parse_args()
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(levelname)s %(message)s")
-    main_scrape(max_pages=args.max_pages, headless=not args.show_browser, prune=args.prune)
+    main_scrape(max_pages=args.max_pages, prune=args.prune)
 
 
 if __name__ == "__main__":
