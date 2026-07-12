@@ -3,6 +3,4 @@ flask-cors
 firebase-admin
 gunicorn
 python-dateutil
-Pillow>=10.3
-requests>=2.31
 selenium>=4.11

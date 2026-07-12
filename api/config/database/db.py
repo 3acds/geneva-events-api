@@ -9,10 +9,11 @@ import os
 from functools import lru_cache
 
 
-def _get_firebase_app():
+@lru_cache(maxsize=1)
+def get_db():
     try:
         import firebase_admin
-        from firebase_admin import credentials
+        from firebase_admin import credentials, firestore
     except ImportError as exc:
         raise RuntimeError("firebase-admin is not installed") from exc
 
@@ -29,31 +30,4 @@ def _get_firebase_app():
             # FIRESTORE_EMULATOR_HOST environment variable in development.
             firebase_admin.initialize_app()
 
-    return firebase_admin.get_app()
-
-
-@lru_cache(maxsize=1)
-def get_db():
-    try:
-        from firebase_admin import firestore
-    except ImportError as exc:
-        raise RuntimeError("firebase-admin is not installed") from exc
-
-    _get_firebase_app()
-
     return firestore.client()
-
-
-@lru_cache(maxsize=1)
-def get_bucket():
-    try:
-        from firebase_admin import storage
-    except ImportError as exc:
-        raise RuntimeError("firebase-admin is not installed") from exc
-
-    bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
-    if not bucket_name:
-        raise RuntimeError("FIREBASE_STORAGE_BUCKET is not configured")
-
-    _get_firebase_app()
-    return storage.bucket(bucket_name)
