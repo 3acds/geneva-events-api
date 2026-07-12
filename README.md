@@ -19,6 +19,11 @@ Configure Firebase in one of these ways:
 - use Google Application Default Credentials; or
 - set `FIRESTORE_EMULATOR_HOST` for local development.
 
+The scraper also requires `FIREBASE_STORAGE_BUCKET`. It downloads each source
+image, validates and normalizes it to WebP, then uploads it to
+`events/<event-id>/cover.webp`. Firestore therefore exposes a stable image URL
+owned by this project rather than a third-party hotlink.
+
 Set `CORS_ORIGINS` to a comma-separated list when the frontend is hosted on
 additional domains. The defaults are `https://gee.bsilva.ch` and the local
 Vite development server.
@@ -47,7 +52,9 @@ This repository includes a GitHub Actions workflow that performs a complete
 scrape every 30 minutes, upserts the current events, and removes records that
 are no longer on the agenda. Add the Firebase service-account JSON as the
 repository secret `FIREBASE_CREDENTIALS_JSON`, then run **Sync Geneva events**
-manually once to verify it. Scheduled GitHub Actions jobs can start a few
+and add the repository variable `FIREBASE_STORAGE_BUCKET` (for example,
+`your-project.firebasestorage.app`). Then run **Sync Geneva events** manually
+once to verify it. Scheduled GitHub Actions jobs can start a few
 minutes late, so this is near-real-time synchronization rather than an
 instantaneous feed.
 
@@ -61,6 +68,10 @@ Pruning is rejected when `--max-pages` is used, and an empty scrape is never
 written. By default, pruning is also rejected if the scrape returns fewer than
 50% of the existing record count. Override that threshold with
 `PRUNE_MIN_RATIO` only when a large legitimate drop is expected.
+
+If downloading a refreshed image fails, the synchronization retains the last
+valid Storage image and its source metadata. A placeholder is used only when
+an event has never had a valid downloadable image.
 
 ## API
 
