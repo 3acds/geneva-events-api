@@ -78,6 +78,10 @@ written. By default, pruning is also rejected if the scrape returns fewer than
 - `GET /events/<id>/related?limit=4` — bounded related events near its date
 - `GET /events/tag/<tag>` — events with an exact normalized tag
 - `GET /events/date?day=14&month=3&year=2026` — filter by one or more date parts
+- `GET /saved-events` — list the verified user's saved events
+- `PUT /saved-events/<id>` — idempotently save an existing event
+- `DELETE /saved-events/<id>` — remove the verified user's save
+- `GET /saved-events/status?event_id=<id>` — check saved state for up to 100 IDs
 
 Successful collection responses are JSON arrays, including an empty array when
 there are no matches. Missing event IDs return `404`; bad date-filter input
@@ -86,6 +90,10 @@ returns `400`; database configuration failures return `503`.
 Filters are URL-based and combinable. Dates use `YYYY-MM-DD`, times use
 `HH:MM`, and unsupported or contradictory filters return `400`. Unknown event
 times are excluded from time filters rather than treated as midnight.
+
+Saved-event routes require a Firebase ID token in the `Authorization: Bearer`
+header. The API verifies the token server-side and derives ownership from its
+UID; clients never submit a user ID as proof of identity.
 
 See [docs/AUDIT_AND_ROADMAP.md](docs/AUDIT_AND_ROADMAP.md) for the schema
 reliability matrix, migration notes, constraints, and phased roadmap.

@@ -6,6 +6,7 @@ from flask_cors import CORS
 
 # Blueprints
 from api.routes.events.event_controller import event_blueprint
+from api.routes.saved_events.saved_event_controller import saved_event_blueprint
 # from routes.login.login_controller import login_blueprint
 
 app = Flask(__name__)
@@ -34,6 +35,7 @@ CORS(
     },
 )
 app.register_blueprint(event_blueprint, url_prefix='/events')
+app.register_blueprint(saved_event_blueprint, url_prefix='/saved-events')
 # app.register_blueprint(login_blueprint, url_prefix='/login')
 
 if __name__ == '__main__':

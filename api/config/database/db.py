@@ -10,7 +10,7 @@ from functools import lru_cache
 
 
 @lru_cache(maxsize=1)
-def get_db():
+def initialize_firebase_admin():
     try:
         import firebase_admin
         from firebase_admin import credentials, firestore
@@ -30,4 +30,11 @@ def get_db():
             # FIRESTORE_EMULATOR_HOST environment variable in development.
             firebase_admin.initialize_app()
 
+    return firebase_admin
+
+
+@lru_cache(maxsize=1)
+def get_db():
+    initialize_firebase_admin()
+    from firebase_admin import firestore
     return firestore.client()
