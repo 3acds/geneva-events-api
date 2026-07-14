@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -53,6 +53,15 @@ MONTHS = {
     "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
     "november": 11, "december": 12,
 }
+SOURCE_NAME = "geneve_city_agenda"
+
+
+def _month_number(value):
+    normalized = "".join(
+        character for character in unicodedata.normalize("NFKD", value.casefold())
+        if not unicodedata.combining(character)
+    )
+    return MONTHS.get(value.casefold()) or MONTHS.get(normalized)
 
 
 def parse_event_date(value, now=None):
@@ -87,6 +96,50 @@ def parse_event_date(value, now=None):
         return parsed.replace(hour=0, minute=0, second=0, microsecond=0)
     except (ValueError, OverflowError):
         return None
+
+
+def parse_event_schedule(value, now=None):
+    """Return start, optional end and whether an explicit start time exists."""
+    start = parse_event_date(value, now=now)
+    if start is None:
+        return None, None, False
+    normalized = " ".join((value or "").replace("’", "'").split()).lower()
+    time_match = re.search(r"(?:,|\bà\b|\bde\b)\s*(\d{1,2})h(\d{2})?\b", normalized)
+    has_time = time_match is not None
+    if time_match:
+        hour, minute = int(time_match.group(1)), int(time_match.group(2) or 0)
+        if hour > 23 or minute > 59:
+            return None, None, False
+        start = start.replace(hour=hour, minute=minute)
+
+    end = None
+    range_match = re.search(
+        r"\b(?:du\s+)?(\d{1,2})(?:\s+([a-zàâäéèêëîïôöùûüç]+))?\s+"
+        r"(?:au|to)\s+(\d{1,2})\s+([a-zàâäéèêëîïôöùûüç]+)(?:\s+(\d{4}))?",
+        normalized,
+    )
+    if range_match:
+        end_month = _month_number(range_match.group(4))
+        start_month = _month_number(range_match.group(2) or range_match.group(4))
+        year = int(range_match.group(5) or start.year)
+        try:
+            candidate_start = datetime(year, start_month, int(range_match.group(1)))
+            end = datetime(year, end_month, int(range_match.group(3)))
+            if end < candidate_start:
+                end = end.replace(year=end.year + 1)
+        except (TypeError, ValueError):
+            end = None
+
+    end_time_match = re.search(
+        r"\b(?:à|au|jusqu['’]à)\s*(\d{1,2})h(\d{2})?\b", normalized[time_match.end():]
+        if time_match else ""
+    )
+    if end_time_match:
+        base = end or start
+        hour, minute = int(end_time_match.group(1)), int(end_time_match.group(2) or 0)
+        if hour <= 23 and minute <= 59:
+            end = base.replace(hour=hour, minute=minute)
+    return start, end, has_time
 
 
 def _first_text(element, selectors):
@@ -141,7 +194,7 @@ def normalize_tag(value):
 def parse_article(article, base_url=AGENDA_URL):
     title = _first_text(article, ("h2", "h3", "[class*='title']"))
     raw_date = _first_text(article, ("time", "[class*='date']"))
-    event_date = parse_event_date(raw_date)
+    event_date, end_date, has_start_time = parse_event_schedule(raw_date)
     if not title or event_date is None:
         LOGGER.warning("Skipping incomplete event: title=%r date=%r", title, raw_date)
         return None
@@ -154,19 +207,30 @@ def parse_article(article, base_url=AGENDA_URL):
     description = _first_text(
         article, ("[class*='description']", "[class*='summary']", ".field--type-text", "p")
     )
-    iso_date = event_date.isoformat()
-    event_id = generate_event_id(title, iso_date)
+    # Keep the established title/date identifier stable as richer time data is added.
+    legacy_date = event_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    event_id = generate_event_id(title, legacy_date.isoformat())
+    scraped_at = datetime.now(timezone.utc)
+    article_text = article.get_text(" ", strip=True).casefold()
     return {
         "id": event_id,
         "img": image,
         "title": title,
-        "date": event_date,
+        "date": legacy_date,
         "day": event_date.day,
         "month": event_date.month,
         "year": event_date.year,
         "description": description,
         "tag": tag,
         "source_url": link,
+        "start_at": event_date,
+        "end_at": end_date,
+        "has_start_time": has_start_time,
+        "raw_date": raw_date,
+        "price_type": "free" if "100% gratuit" in article_text else "unknown",
+        "source": SOURCE_NAME,
+        "scraped_at": scraped_at,
+        "updated_at": scraped_at,
     }
 
 

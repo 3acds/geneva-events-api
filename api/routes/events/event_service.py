@@ -12,6 +12,9 @@ class EventService:
     events = self.event_repository.fetch_all_events()
     return events
 
+  def get_filtered_events(self, **filters):
+    return self.event_repository.fetch_filtered_events(**filters)
+
   def get_event_by_id(self, event_id):
     return self.event_repository.fetch_event_by_id(event_id)
 

@@ -14,6 +14,14 @@ class Event:
     description: str = ""
     tag: str = ""
     source_url: str = ""
+    start_at: object = None
+    end_at: object = None
+    has_start_time: bool = False
+    raw_date: str = ""
+    price_type: str = "unknown"
+    source: str = ""
+    scraped_at: object = None
+    updated_at: object = None
 
     @classmethod
     def from_document(cls, document):
@@ -24,6 +32,7 @@ class Event:
 
     def to_dict(self):
         result = asdict(self)
-        if isinstance(self.date, (date, datetime)):
-            result["date"] = self.date.isoformat()
+        for key in ("date", "start_at", "end_at", "scraped_at", "updated_at"):
+            if isinstance(result[key], (date, datetime)):
+                result[key] = result[key].isoformat()
         return result

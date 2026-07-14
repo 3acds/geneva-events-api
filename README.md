@@ -70,6 +70,10 @@ written. By default, pruning is also rejected if the scrape returns fewer than
 
 - `GET /health` — liveness check (does not contact Firestore)
 - `GET /events/` — all events ordered by date
+- `GET /events/?when=today|tomorrow|this_week|this_weekend` — date presets
+- `GET /events/?date_from=2026-07-14&date_to=2026-07-20&category=Concert` —
+  combinable inclusive date range and category filters
+- `GET /events/?start_time_from=18:00&start_time_to=23:00` — known-time events
 - `GET /events/<id>` — one event, used when a detail page is opened directly
 - `GET /events/tag/<tag>` — events with an exact normalized tag
 - `GET /events/date?day=14&month=3&year=2026` — filter by one or more date parts
@@ -77,6 +81,21 @@ written. By default, pruning is also rejected if the scrape returns fewer than
 Successful collection responses are JSON arrays, including an empty array when
 there are no matches. Missing event IDs return `404`; bad date-filter input
 returns `400`; database configuration failures return `503`.
+
+Filters are URL-based and combinable. Dates use `YYYY-MM-DD`, times use
+`HH:MM`, and unsupported or contradictory filters return `400`. Unknown event
+times are excluded from time filters rather than treated as midnight.
+
+See [docs/AUDIT_AND_ROADMAP.md](docs/AUDIT_AND_ROADMAP.md) for the schema
+reliability matrix, migration notes, constraints, and phased roadmap.
+
+## Test
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+python3 -m compileall -q api scraper tests
+```
 
 ## Docker
 
