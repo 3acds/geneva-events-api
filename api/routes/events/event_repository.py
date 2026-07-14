@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from api.config.database.db import get_db
 from .event import Event
@@ -59,6 +59,36 @@ class EventRepository:
             if value is not None:
                 query = query.where(filter=self._field_filter(field, "==", value))
         return self._events(query.order_by("date"))
+
+    def fetch_related_events(self, event, limit=4):
+        """Find a small candidate set near the event date and rank reliable matches."""
+        collection = self._db_factory().collection("Events")
+        if isinstance(event.date, datetime):
+            query = collection.where(
+                filter=self._field_filter("date", ">=", event.date - timedelta(days=7))
+            ).where(
+                filter=self._field_filter("date", "<=", event.date + timedelta(days=7))
+            ).order_by("date")
+        elif event.tag:
+            query = collection.where(filter=self._field_filter("tag", "==", event.tag))
+        else:
+            return []
+        candidates = [candidate for candidate in self._events(query) if candidate.id != event.id]
+
+        def score(candidate):
+            points = 0
+            if event.tag and candidate.tag == event.tag:
+                points += 2
+            if (event.venue_name and candidate.venue_name
+                    and candidate.venue_name.casefold() == event.venue_name.casefold()):
+                points += 4
+            if isinstance(event.date, datetime) and isinstance(candidate.date, datetime):
+                distance = abs((candidate.date.date() - event.date.date()).days)
+                points += 3 if distance == 0 else max(0, 2 - distance // 3)
+            return points
+
+        ranked = sorted(candidates, key=lambda candidate: (-score(candidate), str(candidate.date)))
+        return ranked[:limit]
 
     @staticmethod
     def _field_filter(field, operator, value):

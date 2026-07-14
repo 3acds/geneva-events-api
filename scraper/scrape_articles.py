@@ -2,12 +2,15 @@
 
 import argparse
 import hashlib
+import json
 import logging
+import math
 import os
 import re
 import sys
+import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -54,6 +57,10 @@ MONTHS = {
     "november": 11, "december": 12,
 }
 SOURCE_NAME = "geneve_city_agenda"
+LOCATION_FIELDS = (
+    "venue_name", "address", "postal_code", "city", "latitude", "longitude",
+    "location_status", "raw_location", "location_checked_at",
+)
 
 
 def _month_number(value):
@@ -191,6 +198,149 @@ def normalize_tag(value):
     return TAG_MAP.get(normalized, "_".join(value.split()))
 
 
+def _clean_location_text(value, maximum=300):
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:maximum]
+
+
+def _coordinate(value, minimum, maximum):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and minimum <= number <= maximum else None
+
+
+def _event_location_nodes(value):
+    nodes = []
+    if isinstance(value, dict):
+        node_types = value.get("@type", [])
+        if isinstance(node_types, str):
+            node_types = [node_types]
+        if "Event" in node_types and value.get("location") is not None:
+            location = value["location"]
+            nodes.extend(location if isinstance(location, list) else [location])
+        for child in value.values():
+            nodes.extend(_event_location_nodes(child))
+    elif isinstance(value, list):
+        for child in value:
+            nodes.extend(_event_location_nodes(child))
+    return nodes
+
+
+def parse_location_from_html(html):
+    """Extract only structured schema.org Event locations from a detail page."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    locations = []
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            value = json.loads(script.string or script.get_text())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        locations.extend(_event_location_nodes(value))
+
+    structured = [location for location in locations if isinstance(location, dict)]
+    unique = {
+        json.dumps(location, ensure_ascii=False, sort_keys=True): location
+        for location in structured
+    }
+    if not unique:
+        raw_candidate = soup.select_one(".field--name-field-oa-autre-lieu")
+        raw_text = _clean_location_text(
+            raw_candidate.get_text(" ", strip=True) if raw_candidate else "", 1000,
+        )
+        return {
+            "venue_name": "", "address": "", "postal_code": "", "city": "",
+            "latitude": None, "longitude": None,
+            "location_status": "partial" if raw_text else "missing",
+            "raw_location": raw_text,
+        }
+    if len(unique) > 1:
+        return {
+            "venue_name": "", "address": "", "postal_code": "", "city": "",
+            "latitude": None, "longitude": None, "location_status": "ambiguous",
+            "raw_location": json.dumps(list(unique.values()), ensure_ascii=False)[:4000],
+        }
+
+    location = next(iter(unique.values()))
+    address_node = location.get("address")
+    if isinstance(address_node, str):
+        address_node = {"streetAddress": address_node}
+    if not isinstance(address_node, dict):
+        address_node = {}
+    geo = location.get("geo") if isinstance(location.get("geo"), dict) else {}
+    venue_name = _clean_location_text(location.get("name"))
+    address = _clean_location_text(address_node.get("streetAddress"))
+    postal_code = _clean_location_text(address_node.get("postalCode"), 20)
+    city = _clean_location_text(address_node.get("addressLocality"), 120)
+    latitude = _coordinate(geo.get("latitude"), -90, 90)
+    longitude = _coordinate(geo.get("longitude"), -180, 180)
+    has_coordinates = latitude is not None and longitude is not None
+    if has_coordinates or (venue_name and address and (postal_code or city)):
+        status = "confirmed"
+    elif venue_name or address or postal_code or city:
+        status = "partial"
+    else:
+        status = "missing"
+    return {
+        "venue_name": venue_name,
+        "address": address,
+        "postal_code": postal_code,
+        "city": city,
+        "latitude": latitude if has_coordinates else None,
+        "longitude": longitude if has_coordinates else None,
+        "location_status": status,
+        "raw_location": json.dumps(location, ensure_ascii=False, sort_keys=True)[:4000],
+    }
+
+
+def enrich_event_locations(events, existing_documents=(), session=None, now=None,
+                           limit=None, delay_seconds=None):
+    """Rate-limit and cache detail-page location extraction across scraper runs."""
+    now = now or datetime.now(timezone.utc)
+    limit = int(os.getenv("LOCATION_ENRICH_LIMIT", "20")) if limit is None else limit
+    delay_seconds = (float(os.getenv("LOCATION_REQUEST_DELAY_SECONDS", "0.25"))
+                     if delay_seconds is None else delay_seconds)
+    refresh_days = int(os.getenv("LOCATION_REFRESH_DAYS", "30"))
+    refresh_before = now - timedelta(days=refresh_days)
+    existing = {
+        document.id: (document.to_dict() or {})
+        for document in existing_documents
+    }
+    session = session or requests.Session()
+    session.headers.update(REQUEST_HEADERS)
+    checked = 0
+    for event in events:
+        previous = existing.get(event["id"], {})
+        last_checked = previous.get("location_checked_at")
+        if isinstance(last_checked, datetime):
+            if last_checked.tzinfo is None:
+                last_checked = last_checked.replace(tzinfo=timezone.utc)
+            if last_checked >= refresh_before:
+                continue
+        if checked >= limit or not event.get("source_url"):
+            continue
+        if checked and delay_seconds > 0:
+            time.sleep(delay_seconds)
+        checked += 1
+        try:
+            response = session.get(event["source_url"], timeout=(10, 30))
+            response.raise_for_status()
+            parsed = parse_location_from_html(response.text)
+        except requests.RequestException as exc:
+            LOGGER.warning("Location enrichment failed for %s: %s", event["source_url"], exc)
+            continue
+        previous_status = previous.get("location_status")
+        if (previous_status in {"confirmed", "partial", "geocoded"}
+                and parsed["location_status"] in {"missing", "ambiguous"}):
+            event["location_checked_at"] = now
+            continue
+        event.update(parsed)
+        event["location_checked_at"] = now
+    return checked
+
+
 def parse_article(article, base_url=AGENDA_URL):
     title = _first_text(article, ("h2", "h3", "[class*='title']"))
     raw_date = _first_text(article, ("time", "[class*='date']"))
@@ -278,12 +428,13 @@ def scrape_events(url=AGENDA_URL, max_pages=None, session=None):
     return list(events.values())
 
 
-def save_data(events, db, prune=False):
+def save_data(events, db, prune=False, existing_documents=None):
     """Upsert a complete scrape and optionally remove records no longer listed."""
     if not events:
         raise RuntimeError("Refusing to sync an empty scrape")
 
-    existing_documents = list(db.collection("Events").stream()) if prune else []
+    existing_documents = (list(db.collection("Events").stream())
+                          if existing_documents is None and prune else (existing_documents or []))
     minimum_ratio = float(os.getenv("PRUNE_MIN_RATIO", "0.5"))
     if existing_documents and len(events) < len(existing_documents) * minimum_ratio:
         raise RuntimeError(
@@ -325,7 +476,13 @@ def main_scrape(max_pages=None, prune=False):
         raise ValueError("--prune cannot be combined with --max-pages")
 
     events = scrape_events(max_pages=max_pages)
-    saved, deleted = save_data(events, get_db(), prune=prune)
+    db = get_db()
+    existing_documents = list(db.collection("Events").stream())
+    enriched = enrich_event_locations(events, existing_documents=existing_documents)
+    saved, deleted = save_data(
+        events, db, prune=prune, existing_documents=existing_documents,
+    )
+    LOGGER.info("Checked location metadata for %d events", enriched)
     LOGGER.info("Synchronized %d events and removed %d stale events", saved, deleted)
     return saved
 

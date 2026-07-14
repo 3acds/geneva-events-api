@@ -23,3 +23,9 @@ class EventService:
 
   def get_events_by_date(self, day=None, month=None, year=None):
     return self.event_repository.fetch_events_by_date(day, month, year)
+
+  def get_related_events(self, event_id, limit=4):
+    event = self.event_repository.fetch_event_by_id(event_id)
+    if not event:
+      return None
+    return self.event_repository.fetch_related_events(event, limit=limit)

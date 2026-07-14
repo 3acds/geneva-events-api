@@ -75,6 +75,7 @@ written. By default, pruning is also rejected if the scrape returns fewer than
   combinable inclusive date range and category filters
 - `GET /events/?start_time_from=18:00&start_time_to=23:00` — known-time events
 - `GET /events/<id>` — one event, used when a detail page is opened directly
+- `GET /events/<id>/related?limit=4` — bounded related events near its date
 - `GET /events/tag/<tag>` — events with an exact normalized tag
 - `GET /events/date?day=14&month=3&year=2026` — filter by one or more date parts
 
@@ -88,6 +89,11 @@ times are excluded from time filters rather than treated as midnight.
 
 See [docs/AUDIT_AND_ROADMAP.md](docs/AUDIT_AND_ROADMAP.md) for the schema
 reliability matrix, migration notes, constraints, and phased roadmap.
+
+Location detail enrichment is cached and rate-limited. Optional controls are
+`LOCATION_ENRICH_LIMIT` (default `20` records/run),
+`LOCATION_REQUEST_DELAY_SECONDS` (default `0.25`) and
+`LOCATION_REFRESH_DAYS` (default `30`). No geocoding credentials are required.
 
 ## Test
 

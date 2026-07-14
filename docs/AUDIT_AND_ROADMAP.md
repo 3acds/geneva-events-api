@@ -25,8 +25,9 @@ Audit date: 2026-07-14
 | start date | reliable | Required; stored in legacy `date` and canonical `start_at`. |
 | start time | optional/reliable | Explicit time only; `has_start_time` distinguishes unknown time. |
 | end date/time | optional | Parsed only from explicit ranges. |
-| venue/address/postal code/city | unavailable | Not reliably structured on listing cards. |
-| latitude/longitude | unavailable | Must not be fabricated or browser-geocoded. |
+| venue/address | detail-page reliable | Structured schema.org `Place` data appeared on 9/10 audited detail pages. |
+| postal code/city | inconsistent | Supported when JSON-LD supplies them; absent in the audited sample. |
+| latitude/longitude | unavailable in sample | Accepted only as valid JSON-LD coordinates; never fabricated. |
 | price | partial | Explicit `100% gratuit` becomes `free`; otherwise `unknown`. |
 | source URL | reliable when linked | Original absolute URL is preserved. |
 | organiser | unavailable | Not reliably present on cards. |
@@ -46,6 +47,19 @@ consumers. `raw_date` is retained for diagnostics.
    verification and Firestore authorization design.
 5. Calendar, map, detail, navigation and accessibility UI work belongs in the absent frontend.
 
+### Location audit (2026-07-14)
+
+Listing cards contain no location fields. Nine of ten sampled live detail pages
+exposed a schema.org `Event.location` `Place`; six included a street address.
+Postal codes, locality and coordinates were absent. One page exposed only
+unstructured visible location text, which is not split into normalized fields
+because doing so would be heuristic.
+
+Detail enrichment handles at most `LOCATION_ENRICH_LIMIT` stale/new records per
+run, waits `LOCATION_REQUEST_DELAY_SECONDS` between requests, and rechecks after
+`LOCATION_REFRESH_DAYS`. Reliable cached location data is not replaced by a
+later missing or ambiguous result. No geocoder is configured or used.
+
 ## Phased plan
 
 1. Normalize schedule/source fields additively and test parsing.
@@ -59,7 +73,7 @@ consumers. `raw_date` is retained for diagnostics.
 
 Run `python3 -m scraper.scrape_articles --prune` to populate `start_at`,
 `end_at`, `has_start_time`, `raw_date`, `price_type`, `source`, `scraped_at`, and
-`updated_at`. No field is renamed or removed. Roll back by deploying the prior
+`updated_at`, plus additive location fields as detail pages are checked. No field is renamed or removed. Roll back by deploying the prior
 scraper/API; extra fields may safely remain. Physical removal should only use a
 separately reviewed admin script after a Firestore export, so no destructive
 rollback command is included.

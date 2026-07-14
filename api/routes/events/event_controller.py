@@ -104,6 +104,17 @@ def get_event(event_id):
   if event:
     return jsonify(event.to_dict())
   raise NotFoundException("Event not found")
+
+@event_blueprint.route('/<event_id>/related', methods=['GET'])
+@error_handler
+def get_related_events(event_id):
+  limit = request.args.get('limit', default=4, type=int)
+  if not 1 <= limit <= 12:
+    return jsonify({'error': 'limit must be between 1 and 12.'}), 400
+  events = event_service.get_related_events(event_id, limit=limit)
+  if events is None:
+    raise NotFoundException("Event not found")
+  return jsonify([event.to_dict() for event in events])
   
 # GET EVENTS BY {TAG}
 @event_blueprint.route('/tag/<event_tag>', methods=['GET'])

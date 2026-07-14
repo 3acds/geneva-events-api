@@ -22,6 +22,15 @@ class Event:
     source: str = ""
     scraped_at: object = None
     updated_at: object = None
+    venue_name: str = ""
+    address: str = ""
+    postal_code: str = ""
+    city: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
+    location_status: str = "missing"
+    raw_location: str = ""
+    location_checked_at: object = None
 
     @classmethod
     def from_document(cls, document):
@@ -32,7 +41,8 @@ class Event:
 
     def to_dict(self):
         result = asdict(self)
-        for key in ("date", "start_at", "end_at", "scraped_at", "updated_at"):
+        for key in ("date", "start_at", "end_at", "scraped_at", "updated_at",
+                    "location_checked_at"):
             if isinstance(result[key], (date, datetime)):
                 result[key] = result[key].isoformat()
         return result
